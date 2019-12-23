@@ -39,12 +39,12 @@ namespace Pulumi
         private async Task<string> SetRootResourceWorkerAsync(Stack stack)
         {
             var resUrn = await stack.Urn.GetValueAsync().ConfigureAwait(false);
-            await this.Engine.SetRootResourceAsync(new SetRootResourceRequest
+            await this.Monitor.SetRootResourceAsync(new SetRootResourceRequest
             {
                 Urn = resUrn,
             });
 
-            var getResponse = await this.Engine.GetRootResourceAsync(new GetRootResourceRequest());
+            var getResponse = await this.Monitor.GetRootResourceAsync(new GetRootResourceRequest());
             return getResponse.Urn;
         }
     }
