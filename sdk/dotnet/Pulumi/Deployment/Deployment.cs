@@ -97,6 +97,10 @@ namespace Pulumi
             _logger = new Logger(this, this.Monitor);
         }
 
+        /// <summary>
+        /// This constructor is called from <see cref="TestAsync{TStack}"/> with
+        /// a mocked monitor and dummy values for project and stack.
+        /// </summary>
         private Deployment(IMonitor monitor)
         {
             _isDryRun = true;

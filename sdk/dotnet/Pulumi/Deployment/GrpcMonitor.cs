@@ -4,23 +4,6 @@ using Pulumirpc;
 
 namespace Pulumi
 {
-    internal interface IMonitor
-    {
-        Task<InvokeResponse> InvokeAsync(InvokeRequest request);
-
-        Task<ReadResourceResponse> ReadResourceAsync(Resource resource, ReadResourceRequest request);
-
-        Task<RegisterResourceResponse> RegisterResourceAsync(Resource resource, RegisterResourceRequest request);
-
-        Task RegisterResourceOutputsAsync(RegisterResourceOutputsRequest request);
-
-        Task LogAsync(LogRequest request);
-
-        Task<SetRootResourceResponse> SetRootResourceAsync(SetRootResourceRequest request);
-
-        Task<GetRootResourceResponse> GetRootResourceAsync(GetRootResourceRequest request);
-    }
-    
     class GrpcMonitor : IMonitor
     {
         private readonly ResourceMonitor.ResourceMonitorClient _client;

@@ -1,11 +1,7 @@
 ﻿// Copyright 2016-2019, Pulumi Corporation
 
-using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
 using System.Threading.Tasks;
-using Moq;
 using Pulumi.Serialization;
 using Pulumi.Testing;
 using Xunit;
@@ -75,6 +71,20 @@ namespace Pulumi.Tests.Core
             
             Assert.True(result.HasErrors, "Deployment should have failed");
             Assert.Contains("Foo was not an Output", result.LoggedErrors[0]);
+        }
+        
+        private class DefaultMocks : IMocks
+        {
+            public Task<(string id, object state)> NewResourceAsync(string type, string name,
+                ImmutableDictionary<string, object> inputs, string? provider, string? id)
+            {
+                var outputs = inputs.Add("name", "test");
+                return Task.FromResult((type + "-test", (object)outputs));
+
+            }
+
+            public Task<object> CallAsync(string token, ImmutableDictionary<string, object> args, string? provider)
+                => Task.FromResult((object)args);
         }
     }
 }
