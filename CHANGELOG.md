@@ -10,6 +10,9 @@ CHANGELOG
 
 - Update `SummaryEvent` to include the actual name and local file path for locally-executed policy packs.
 
+- Support for unit testing and mocking in the .NET SDK.
+  [#3696](https://github.com/pulumi/pulumi/pull/3696)
+
 ## 1.9.1 (2020-01-27)
 - Fix a stack reference regression in the Python SDK.
   [#3798](https://github.com/pulumi/pulumi/pull/3798)
