@@ -1,12 +1,14 @@
+// Copyright 2016-2020, Pulumi Corporation
+
 using System.Threading.Tasks;
 using Pulumirpc;
 
 namespace Pulumi
 {
     /// <summary>
-    /// Abstraction for hooks to the engine and monitor.
+    /// Encapsulates all the RPC operations we need the deployment to perform.
     /// </summary>
-    internal interface IMonitor
+    internal interface IRpcDispatcher
     {
         Task<InvokeResponse> InvokeAsync(InvokeRequest request);
 

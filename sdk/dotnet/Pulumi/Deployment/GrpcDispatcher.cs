@@ -1,15 +1,17 @@
+// Copyright 2016-2020, Pulumi Corporation
+
 using System.Threading.Tasks;
 using Grpc.Core;
 using Pulumirpc;
 
 namespace Pulumi
 {
-    class GrpcMonitor : IMonitor
+    internal class GrpcDispatcher : IRpcDispatcher
     {
         private readonly ResourceMonitor.ResourceMonitorClient _client;
         private readonly Engine.EngineClient _engine;
 
-        public GrpcMonitor(string engine, string monitor)
+        public GrpcDispatcher(string engine, string monitor)
         {
             this._engine = new Engine.EngineClient(new Channel(engine, ChannelCredentials.Insecure));
             this._client = new ResourceMonitor.ResourceMonitorClient(new Channel(monitor, ChannelCredentials.Insecure));

@@ -53,7 +53,7 @@ namespace Pulumi
         private readonly ILogger _logger;
         private readonly IRunner _runner;
 
-        internal IMonitor Monitor { get; }
+        internal IRpcDispatcher RpcDispatcher { get; }
 
         internal Stack? _stack;
         internal Stack Stack
@@ -90,25 +90,25 @@ namespace Pulumi
             _projectName = project;
 
             Serilog.Log.Debug("Creating Deployment Engine and Monitor.");
-            this.Monitor = new GrpcMonitor(engine, monitor);
+            this.RpcDispatcher = new GrpcDispatcher(engine, monitor);
             Serilog.Log.Debug("Created Deployment Engine and Monitor.");
 
             _runner = new Runner(this);
-            _logger = new Logger(this, this.Monitor);
+            _logger = new Logger(this, this.RpcDispatcher);
         }
 
         /// <summary>
         /// This constructor is called from <see cref="TestAsync{TStack}"/> with
         /// a mocked monitor and dummy values for project and stack.
         /// </summary>
-        private Deployment(IMonitor monitor)
+        private Deployment(IRpcDispatcher rpcDispatcher)
         {
             _isDryRun = true;
             _stackName = "teststack";
             _projectName = "testproject";
-            this.Monitor = monitor;
+            this.RpcDispatcher = rpcDispatcher;
             _runner = new Runner(this);
-            _logger = new Logger(this, this.Monitor);
+            _logger = new Logger(this, this.RpcDispatcher);
         }
 
         string IDeployment.ProjectName => _projectName;

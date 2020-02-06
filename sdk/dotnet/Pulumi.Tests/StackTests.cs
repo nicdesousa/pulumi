@@ -41,7 +41,12 @@ namespace Pulumi.Tests.Core
         private class NullOutputStack : Stack
         {
             [Output("foo")]
-            public Output<string>? Foo { get; }
+            public Output<string>? Foo { get; set; }
+
+            public NullOutputStack()
+            {
+                Foo = null;
+            }
         }
 
         [Fact]
@@ -50,7 +55,7 @@ namespace Pulumi.Tests.Core
             var result = await Deployment.TestAsync<NullOutputStack>(new DefaultMocks());
             
             Assert.True(result.HasErrors, "Deployment should have failed");
-            Assert.Contains("Foo", result.LoggedErrors[0]);
+            Assert.Contains("Output(s) 'foo' have no value assigned", result.LoggedErrors[0]);
         }
 
         private class InvalidOutputTypeStack : Stack

@@ -98,7 +98,7 @@ namespace Pulumi
         /// <returns>Test result containing created resources and errors, if any.</returns>
         public static async Task<TestResult> TestAsync<TStack>(IMocks mocks) where TStack : Stack, new()
         {
-            var monitor = new MockMonitor(mocks);
+            var monitor = new MockRpcDispatcher(mocks);
             var deployment = new Deployment(monitor);
             Instance = deployment;
             var code = await deployment._runner.RunAsync<TStack>();

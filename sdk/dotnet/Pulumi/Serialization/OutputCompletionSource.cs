@@ -72,7 +72,8 @@ namespace Pulumi.Serialization
             {
                 var propType = prop.PropertyType;
                 var propFullName = $"[Output] {resource.GetType().FullName}.{prop.Name}";
-                if (!propType.IsOutputType())
+                if (!propType.IsConstructedGenericType ||
+                    propType.GetGenericTypeDefinition() != typeof(Output<>))
                 {
                     throw new InvalidOperationException($"{propFullName} was not an Output<T>");
                 }
@@ -98,11 +99,6 @@ namespace Pulumi.Serialization
 
             Log.Debug("Fields to assign: " + JsonSerializer.Serialize(result.Keys), resource);
             return result.ToImmutable();
-        }
-
-        private static bool IsOutputType(this Type propType)
-        {
-            return propType.IsConstructedGenericType && propType.IsGenericType && propType.GetGenericTypeDefinition() == typeof(Output<>);
         }
     }
 }

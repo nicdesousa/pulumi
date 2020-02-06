@@ -13,17 +13,17 @@ namespace Pulumi
         {
             private readonly object _logGate = new object();
             private readonly IDeploymentInternal _deployment;
-            private readonly IMonitor _monitor;
+            private readonly IRpcDispatcher _rpcDispatcher;
 
             // We serialize all logging tasks so that the engine doesn't hear about them out of order.
             // This is necessary for streaming logs to be maintained in the right order.
             private Task _lastLogTask = Task.CompletedTask;
             private int _errorCount;
 
-            public Logger(IDeploymentInternal deployment, IMonitor monitor)
+            public Logger(IDeploymentInternal deployment, IRpcDispatcher rpcDispatcher)
             {
                 _deployment = deployment;
-                _monitor = monitor;
+                _rpcDispatcher = rpcDispatcher;
             }
 
             public bool LoggedErrors
@@ -105,7 +105,7 @@ namespace Pulumi
                 {
                     var urn = await TryGetResourceUrnAsync(resource).ConfigureAwait(false);
 
-                    await _monitor.LogAsync(new LogRequest
+                    await _rpcDispatcher.LogAsync(new LogRequest
                     {
                         Severity = severity,
                         Message = message,

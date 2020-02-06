@@ -1,6 +1,10 @@
+// Copyright 2016-2020, Pulumi Corporation
+
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Runtime.Serialization;
 using System.Threading.Tasks;
 using Google.Protobuf.WellKnownTypes;
 using Pulumi.Serialization;
@@ -8,11 +12,12 @@ using Pulumirpc;
 
 namespace Pulumi.Testing
 {
-    internal class MockMonitor : IMonitor
+    internal class MockRpcDispatcher : IRpcDispatcher
     {
         private readonly IMocks _mocks;
         private readonly Serializer _serializer = new Serializer();
-        private string? _rootResourceUrn = null;
+        private string? _rootResourceUrn;
+        private object _rootResourceUrnLock = new object();
         
         public readonly List<string> Errors = new List<string>();
         public readonly List<Resource> Resources = new List<Resource>();
@@ -20,39 +25,50 @@ namespace Pulumi.Testing
         public ImmutableDictionary<string, object> StackOutputs { get; private set; } =
             ImmutableDictionary<string, object>.Empty;
 
-        public MockMonitor(IMocks mocks)
+        public MockRpcDispatcher(IMocks mocks)
         {
             _mocks = mocks;
         }
 
         public async Task<InvokeResponse> InvokeAsync(InvokeRequest request)
         {
-            var result = await _mocks.CallAsync(request.Tok, ToDictionary(request.Args), request.Provider);
-            return new InvokeResponse { Return = await SerializeAsync(result) };
+            var result = await _mocks.CallAsync(request.Tok, ToDictionary(request.Args), request.Provider)
+                .ConfigureAwait(false);
+            return new InvokeResponse {Return = await SerializeAsync(result).ConfigureAwait(false)};
         }
 
         public async Task<ReadResourceResponse> ReadResourceAsync(Resource resource, ReadResourceRequest request)
         {
             var (id, state) = await _mocks.NewResourceAsync(request.Type, request.Name,
-                ToDictionary(request.Properties), request.Provider, request.Id);
-            this.Resources.Add(resource);
+                ToDictionary(request.Properties), request.Provider, request.Id).ConfigureAwait(false);
+
+            lock (this.Resources)
+            {
+                this.Resources.Add(resource);
+            }
+
             return new ReadResourceResponse
             {
                 Urn = NewUrn(request.Parent, request.Type, request.Name),
-                Properties = await SerializeAsync(state)
+                Properties = await SerializeAsync(state).ConfigureAwait(false) 
             };
         }
 
         public async Task<RegisterResourceResponse> RegisterResourceAsync(Resource resource, RegisterResourceRequest request)
         {
             var (id, state) = await _mocks.NewResourceAsync(request.Type, request.Name, ToDictionary(request.Object),
-                request.Provider, request.ImportId);
-            this.Resources.Add(resource);
+                request.Provider, request.ImportId).ConfigureAwait(false);
+            
+            lock (this.Resources)
+            {
+                this.Resources.Add(resource);
+            }
+
             return new RegisterResourceResponse
             {
                 Id = id ?? request.ImportId,
                 Urn = NewUrn(request.Parent, request.Type, request.Name),
-                Object = await SerializeAsync(state)
+                Object = await SerializeAsync(state).ConfigureAwait(false) 
             };
         }
 
@@ -71,7 +87,10 @@ namespace Pulumi.Testing
         {
             if (request.Severity == LogSeverity.Error)
             {
-                this.Errors.Add(request.Message);
+                lock (this.Errors)
+                {
+                    this.Errors.Add(request.Message);
+                }
             }
             
             return Task.CompletedTask;
@@ -79,14 +98,29 @@ namespace Pulumi.Testing
 
         public Task<SetRootResourceResponse> SetRootResourceAsync(SetRootResourceRequest request)
         {
-            _rootResourceUrn = request.Urn;
+            lock (_rootResourceUrnLock)
+            {
+                if (_rootResourceUrn != null && _rootResourceUrn != request.Urn)
+                    throw new InvalidOperationException(
+                        $"An invalid attempt to set the root resource to {request.Urn} while it's already set to {_rootResourceUrn}");
+                
+                _rootResourceUrn = request.Urn;
+            }
+
             return Task.FromResult(new SetRootResourceResponse());
         }
 
-        public Task<GetRootResourceResponse> GetRootResourceAsync(
-            GetRootResourceRequest request)
-            => Task.FromResult(new GetRootResourceResponse { Urn = _rootResourceUrn });
-        
+        public Task<GetRootResourceResponse> GetRootResourceAsync(GetRootResourceRequest request)
+        {
+            lock (_rootResourceUrnLock)
+            {
+                if (_rootResourceUrn == null)
+                    throw new InvalidOperationException("Root resource is not set");
+                
+                return Task.FromResult(new GetRootResourceResponse {Urn = _rootResourceUrn});
+            }
+        }
+
         private static string NewUrn(string parent, string type, string name)
         {
             if (!string.IsNullOrEmpty(parent)) 
@@ -115,8 +149,8 @@ namespace Pulumi.Testing
         private async Task<Struct> SerializeAsync(object o)
         {
             var dict = (o as IDictionary<string, object>)?.ToImmutableDictionary()
-                       ?? await _serializer.SerializeAsync("", o) as ImmutableDictionary<string, object>
-                       ?? ImmutableDictionary<string, object>.Empty;
+                       ?? await _serializer.SerializeAsync("", o).ConfigureAwait(false) as ImmutableDictionary<string, object>
+                       ?? throw new InvalidOperationException($"{o.GetType().FullName} is not a supported argument type");
             return Serializer.CreateStruct(dict);
         }
     }
