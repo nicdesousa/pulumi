@@ -6,12 +6,15 @@ import (
 	pschema "github.com/pulumi/pulumi/pkg/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/resource"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 var assetType = reflect.TypeOf((*resource.Asset)(nil)).Elem()
 var archiveType = reflect.TypeOf((*resource.Archive)(nil)).Elem()
+var funcType = reflect.TypeOf((*function.Function)(nil)).Elem()
 var assetCapsule = cty.Capsule("Asset", assetType)
 var archiveCapsule = cty.Capsule("Archive", archiveType)
+var funcCapsule = cty.Capsule("Func", funcType)
 
 func makeType(t pschema.Type) cty.Type {
 	switch t := t.(type) {

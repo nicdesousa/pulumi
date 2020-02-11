@@ -61,15 +61,15 @@ func Run(ctx context.Context, sources map[string][]byte, info RunInfo) (map[stri
 
 	var diags hcl.Diagnostics
 
-	// Prepare each resource.
-	var resourceNames []string
-	for n := range pctx.resources {
-		resourceNames = append(resourceNames, n)
+	// Prepare each node.
+	var nodeNames []string
+	for n := range pctx.nodes {
+		nodeNames = append(nodeNames, n)
 	}
-	sort.Strings(resourceNames)
-	for _, name := range resourceNames {
-		resourceDiags := pctx.resources[name].prepare(pctx)
-		diags = append(diags, resourceDiags...)
+	sort.Strings(nodeNames)
+	for _, name := range nodeNames {
+		nodeDiags := pctx.nodes[name].prepare(pctx)
+		diags = append(diags, nodeDiags...)
 	}
 
 	// Prepare each output
@@ -89,19 +89,17 @@ func Run(ctx context.Context, sources map[string][]byte, info RunInfo) (map[stri
 
 	// Create a root stack resource that we'll parent everything to.
 	pctx.stack = newResourceState(fmt.Sprintf("%s-%s", info.Project, info.Stack), "pulumi:pulumi:Stack", false, nil, nil)
-	pctx.stack.register(pctx)
+	pctx.stack.evaluate(pctx)
 
-	// Kick off resource registrations.
-	for _, r := range pctx.resources {
-		go r.register(pctx)
+	// Kick off node evaluations.
+	for _, n := range pctx.nodes {
+		go n.evaluate(pctx)
 	}
 
-	// Await all resource registrations.
-	for _, r := range pctx.resources {
-		r.await(pctx)
-		if r.state == resourceRegistrationFailed {
-			diags = append(diags, r.diagnostics...)
-		}
+	// Await all node evaluations.
+	for _, n := range pctx.nodes {
+		_, nodeDiags, _ := n.await(pctx)
+		diags = append(diags, nodeDiags...)
 	}
 
 	// Evaluate and register outputs.

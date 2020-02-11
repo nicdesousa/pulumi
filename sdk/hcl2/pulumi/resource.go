@@ -26,20 +26,18 @@ import (
 	"github.com/pulumi/pulumi/pkg/util/contract"
 	pulumirpc "github.com/pulumi/pulumi/sdk/proto/go"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 const (
-	resourceRegistering           = 0
-	resourceRegistrationFailed    = 1
-	resourceRegistrationSucceeded = 2
-	resourceRegistrationCanceled  = 3
+	resourceRegistering           = awaitablePending
+	resourceRegistrationSucceeded = awaitableResolved
+	resourceRegistrationFailed    = awaitableRejected
+	resourceRegistrationCanceled  = awaitableCanceled
 )
 
 type resourceState struct {
-	mutex sync.Mutex
-	cond  *sync.Cond
-
-	state uint32
+	*awaitable
 
 	name   string
 	token  string
@@ -49,7 +47,7 @@ type resourceState struct {
 	decl   *resourceDecl
 
 	parent               *resourceState
-	dependencies         []*resourceState
+	dependencies         []node
 	propertyDependencies map[string][]*resourceState
 
 	allURNs     []string
@@ -63,7 +61,8 @@ func diagnosticsFromError(err error) hcl.Diagnostics {
 }
 
 func newResourceState(name, token string, custom bool, schema *resourceSchema, decl *resourceDecl) *resourceState {
-	s := &resourceState{
+	return &resourceState{
+		awaitable:            newAwaitable(),
 		name:                 name,
 		token:                token,
 		custom:               custom,
@@ -71,8 +70,10 @@ func newResourceState(name, token string, custom bool, schema *resourceSchema, d
 		decl:                 decl,
 		propertyDependencies: map[string][]*resourceState{},
 	}
-	s.cond = sync.NewCond(&s.mutex)
-	return s
+}
+
+func (rs *resourceState) nodeName() string {
+	return rs.name
 }
 
 func (rs *resourceState) hasRange() bool {
@@ -103,29 +104,53 @@ func (rs *resourceState) prepare(ctx *programContext) hcl.Diagnostics {
 	}
 
 	// Collect the resource's dependencies and ensure they are registered before the resource itself.
-	deps := map[*resourceState]struct{}{}
+	deps := map[node]struct{}{}
 	rs.propertyDependencies = map[string][]*resourceState{}
 	for _, attr := range content.Attributes {
 		attrDeps, attrDiags := expressionDeps(ctx, attr.Expr)
 		diags = append(diags, attrDiags...)
 		for _, dep := range attrDeps {
 			deps[dep] = struct{}{}
-			rs.propertyDependencies[attr.Name] = append(rs.propertyDependencies[attr.Name], dep)
+			if resourceDep, ok := dep.(*resourceState); ok {
+				rs.propertyDependencies[attr.Name] = append(rs.propertyDependencies[attr.Name], resourceDep)
+			}
 		}
 	}
 	for typ, blocks := range content.Blocks.ByType() {
 		for _, block := range blocks {
-			for _, v := range hcldec.Variables(block.Body, rs.schema.spec[typ]) {
+			var blockSpec hcldec.Spec
+			switch spec := rs.schema.spec[typ].(type) {
+			case *hcldec.BlockListSpec:
+				blockSpec = spec.Nested
+			case *hcldec.BlockMapSpec:
+				blockSpec = spec.Nested
+			case *hcldec.BlockObjectSpec:
+				blockSpec = spec.Nested
+			case *hcldec.BlockSetSpec:
+				blockSpec = spec.Nested
+			case *hcldec.BlockSpec:
+				blockSpec = spec.Nested
+			case *hcldec.BlockTupleSpec:
+				blockSpec = spec.Nested
+			case hcldec.ObjectSpec:
+				blockSpec = spec
+			default:
+				contract.Failf("unexpected block spec type %T", spec)
+			}
+
+			for _, v := range hcldec.Variables(block.Body, blockSpec) {
 				depName := v.RootName()
 				if depName == "range" {
 					continue
 				}
-				dep, ok := ctx.resources[depName]
+				dep, ok := ctx.nodes[depName]
 				if !ok {
 					diags = append(diags, unknownResource(depName, v.SourceRange()))
 				} else {
 					deps[dep] = struct{}{}
-					rs.propertyDependencies[typ] = append(rs.propertyDependencies[typ], dep)
+					if resourceDep, ok := dep.(*resourceState); ok {
+						rs.propertyDependencies[typ] = append(rs.propertyDependencies[typ], resourceDep)
+					}
 				}
 			}
 		}
@@ -143,14 +168,11 @@ func (rs *resourceState) prepare(ctx *programContext) hcl.Diagnostics {
 	return diags
 }
 
-func (rs *resourceState) register(ctx *programContext) {
+func (rs *resourceState) evaluate(ctx *programContext) {
 	result := uint32(resourceRegistrationSucceeded)
 
 	defer func() {
-		rs.mutex.Lock()
-		rs.state = result
-		rs.mutex.Unlock()
-		rs.cond.Broadcast()
+		rs.fulfill(result)
 	}()
 
 	var parentURN string
@@ -158,21 +180,30 @@ func (rs *resourceState) register(ctx *programContext) {
 		if rs.parent == nil {
 			rs.parent = ctx.stack
 		}
-		if !rs.parent.await(ctx) {
+		_, _, ok := rs.parent.await(ctx)
+		if !ok {
 			result = resourceRegistrationCanceled
 			return
 		}
 		parentURN = rs.parent.urn()
 	}
 
-	vars := map[string]cty.Value{}
+	vars, funcs := map[string]cty.Value{}, map[string]function.Function{}
 	for _, dep := range rs.dependencies {
-		if !dep.await(ctx) {
+		val, _, ok := dep.await(ctx)
+		if !ok {
 			result = resourceRegistrationCanceled
 			return
 		}
-		vars[dep.name] = dep.outputs()
+		name := dep.nodeName()
+		if val.Type().Equals(funcCapsule) {
+			funcs[name] = *(val.EncapsulatedValue().(*function.Function))
+		} else {
+			vars[name] = val
+		}
 	}
+	evalContext := builtinEvalContext.NewChild()
+	evalContext.Variables, evalContext.Functions = vars, funcs
 
 	// Convert dependency information.
 	rpcPropertyDeps := make(map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies)
@@ -189,18 +220,15 @@ func (rs *resourceState) register(ctx *programContext) {
 	}
 	var rpcDeps []string
 	for _, dep := range rs.dependencies {
-		rpcDeps = append(rpcDeps, dep.allURNs...)
+		if resourceDep, ok := dep.(*resourceState); ok {
+			rpcDeps = append(rpcDeps, resourceDep.allURNs...)
+		}
 	}
 	sort.Strings(rpcDeps)
 
-	evalCtx := &hcl.EvalContext{
-		Variables: vars,
-		Functions: builtinFunctions,
-	}
-
 	count, rangeIter := 1, newCountIterator(cty.NumberIntVal(1))
 	if rs.hasRange() {
-		rangeVal, diags := rs.decl.Options.Range.Value(evalCtx)
+		rangeVal, diags := rs.decl.Options.Range.Value(evalContext)
 		if diags.HasErrors() {
 			rs.diagnostics, result = diags, resourceRegistrationFailed
 			return
@@ -235,7 +263,7 @@ func (rs *resourceState) register(ctx *programContext) {
 	registerOne := func(idx int, key, value cty.Value) singleResult {
 		defer wg.Done()
 
-		myEvalCtx, myName := evalCtx.NewChild(), rs.name
+		myEvalCtx, myName := evalContext.NewChild(), rs.name
 		if rs.hasRange() {
 			myEvalCtx.Variables = map[string]cty.Value{
 				"range": cty.ObjectVal(map[string]cty.Value{
@@ -340,7 +368,7 @@ func (rs *resourceState) register(ctx *programContext) {
 }
 
 func (rs *resourceState) registerOutputs(ctx *programContext, outputs map[string]cty.Value) hcl.Diagnostics {
-	if !rs.await(ctx) {
+	if !rs.awaitable.await(ctx) {
 		return nil
 	}
 
@@ -362,15 +390,9 @@ func (rs *resourceState) registerOutputs(ctx *programContext, outputs map[string
 	return nil
 }
 
-func (rs *resourceState) await(ctx *programContext) bool {
-	rs.mutex.Lock()
-	for rs.state == resourceRegistering {
-		if ctx.cancel.Err() != nil {
-			return false
-		}
-		rs.cond.Wait()
+func (rs *resourceState) await(ctx *programContext) (cty.Value, hcl.Diagnostics, bool) {
+	if !rs.awaitable.await(ctx) {
+		return cty.Value{}, rs.diagnostics, false
 	}
-	rs.mutex.Unlock()
-
-	return rs.state == resourceRegistrationSucceeded
+	return rs.outputs(), nil, true
 }

@@ -4,6 +4,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pkg/errors"
 	pulumirpc "github.com/pulumi/pulumi/sdk/proto/go"
 	"github.com/zclconf/go-cty/cty"
@@ -11,10 +12,17 @@ import (
 	"google.golang.org/grpc"
 )
 
+type node interface {
+	nodeName() string
+	prepare(ctx *programContext) hcl.Diagnostics
+	evaluate(ctx *programContext)
+	await(ctx *programContext) (cty.Value, hcl.Diagnostics, bool)
+}
+
 type configVar struct {
 	Type string `hcl:"type,label"`
 
-	Default *cty.Value `hcl:"default,attr"`
+	Default hcl.Expression `hcl:"default,attr"`
 }
 
 type config struct {
@@ -99,10 +107,10 @@ type programContext struct {
 	monitor pulumirpc.ResourceMonitorClient
 	engine  pulumirpc.EngineClient
 
-	parser    *hclparse.Parser
-	schemae   map[string]*packageSchema
-	resources map[string]*resourceState
-	outputs   map[string]*outputState
+	parser  *hclparse.Parser
+	schemae map[string]*packageSchema
+	nodes   map[string]node
+	outputs map[string]*outputState
 
 	stack *resourceState
 }
@@ -137,14 +145,14 @@ func newProgramContext(cancel context.Context, info RunInfo) (*programContext, e
 	//	}
 
 	return &programContext{
-		cancel:    cancel,
-		info:      info,
-		monitor:   monitor,
-		engine:    engine,
-		parser:    hclparse.NewParser(),
-		schemae:   map[string]*packageSchema{},
-		resources: map[string]*resourceState{},
-		outputs:   map[string]*outputState{},
+		cancel:  cancel,
+		info:    info,
+		monitor: monitor,
+		engine:  engine,
+		parser:  hclparse.NewParser(),
+		schemae: map[string]*packageSchema{},
+		nodes:   map[string]node{},
+		outputs: map[string]*outputState{},
 	}, nil
 }
 
@@ -173,6 +181,10 @@ func (ctx *programContext) addFile(path string, contents []byte) hcl.Diagnostics
 		return diags
 	}
 
+	// Decode the body attributes. Note that we ignore diagnostics here because of an apparent bug in "remain" that
+	// causes blocks to still be present in the popualted hcl.Body.
+	locals, _ := raw.Locals.JustAttributes()
+
 	for _, r := range raw.Resources {
 		pkgName, _, _ := decomposeToken(r.Type)
 		pkgSchema, err := ctx.ensureSchema(pkgName)
@@ -187,12 +199,23 @@ func (ctx *programContext) addFile(path string, contents []byte) hcl.Diagnostics
 		if r.Name == "range" {
 			return diagnosticsFromError(errors.Errorf("resource may not be named 'range'", r.Name))
 		}
-		if _, ok := ctx.resources[r.Name]; ok {
-			return diagnosticsFromError(errors.Errorf("duplicate resource %s", r.Name))
+		if _, ok := ctx.nodes[r.Name]; ok {
+			return diagnosticsFromError(errors.Errorf("duplicate definition %s", r.Name))
 		}
 
 		decl := r
-		ctx.resources[r.Name] = newResourceState(r.Name, resourceSchema.pulumi.Token, true, resourceSchema, &decl)
+		ctx.nodes[r.Name] = newResourceState(r.Name, resourceSchema.pulumi.Token, true, resourceSchema, &decl)
+	}
+
+	for _, l := range locals {
+		if l.Name == "range" {
+			return diagnosticsFromError(errors.Errorf("local may not be named 'range'", l.Name))
+		}
+		if _, ok := ctx.nodes[l.Name]; ok {
+			return diagnosticsFromError(errors.Errorf("duplicate definition %s", l.Name))
+		}
+
+		ctx.nodes[l.Name] = newLocalState(l.Name, l.Expr)
 	}
 
 	for _, o := range raw.Outputs {
@@ -207,20 +230,35 @@ func (ctx *programContext) addFile(path string, contents []byte) hcl.Diagnostics
 	return nil
 }
 
-func expressionDeps(ctx *programContext, expr hcl.Expression) ([]*resourceState, hcl.Diagnostics) {
-	var deps []*resourceState
+func expressionDeps(ctx *programContext, expr hcl.Expression) ([]node, hcl.Diagnostics) {
+	var deps []node
 	var diags hcl.Diagnostics
 	for _, v := range expr.Variables() {
 		depName := v.RootName()
 		if depName == "range" {
 			continue
 		}
-		dep, ok := ctx.resources[depName]
+		dep, ok := ctx.nodes[depName]
 		if !ok {
 			diags = append(diags, unknownResource(depName, v.SourceRange()))
 		} else {
 			deps = append(deps, dep)
 		}
+	}
+	if node, ok := expr.(hclsyntax.Node); ok {
+		hclsyntax.VisitAll(node, func(node hclsyntax.Node) hcl.Diagnostics {
+			if call, ok := node.(*hclsyntax.FunctionCallExpr); ok {
+				if _, ok := builtinEvalContext.Functions[call.Name]; !ok {
+					dep, ok := ctx.nodes[call.Name]
+					if !ok {
+						diags = append(diags, unknownResource(call.Name, call.NameRange))
+					} else {
+						deps = append(deps, dep)
+					}
+				}
+			}
+			return nil
+		})
 	}
 	return deps, diags
 }

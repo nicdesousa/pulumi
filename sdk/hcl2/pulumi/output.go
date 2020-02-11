@@ -17,12 +17,13 @@ package pulumi
 import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 type outputState struct {
 	name         string
 	expr         hcl.Expression
-	dependencies []*resourceState
+	dependencies []node
 }
 
 func (os *outputState) prepare(ctx *programContext) hcl.Diagnostics {
@@ -33,13 +34,22 @@ func (os *outputState) prepare(ctx *programContext) hcl.Diagnostics {
 }
 
 func (os *outputState) evaluate(ctx *programContext) (cty.Value, hcl.Diagnostics) {
-	vars := map[string]cty.Value{}
+	vars, funcs := map[string]cty.Value{}, map[string]function.Function{}
 	for _, dep := range os.dependencies {
-		if !dep.await(ctx) {
+		val, _, ok := dep.await(ctx)
+		if !ok {
 			return cty.UnknownVal(cty.DynamicPseudoType), nil
 		}
-		vars[dep.name] = dep.outputs()
+		name := dep.nodeName()
+		if val.Type().Equals(funcCapsule) {
+			funcs[name] = *(val.EncapsulatedValue().(*function.Function))
+		} else {
+			vars[name] = val
+		}
 	}
 
-	return os.expr.Value(&hcl.EvalContext{Variables: vars})
+	evalContext := builtinEvalContext.NewChild()
+	evalContext.Variables, evalContext.Functions = vars, funcs
+
+	return os.expr.Value(evalContext)
 }

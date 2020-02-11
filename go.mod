@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go v1.28.9
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/cheggaaa/pb v1.0.27
+	github.com/d5/tengo/v2 v2.0.2
 	github.com/djherbis/times v1.0.1
 	github.com/docker/docker v0.0.0-20170504205632-89658bed64c2
 	github.com/dustin/go-humanize v1.0.0
