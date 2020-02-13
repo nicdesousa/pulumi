@@ -48,7 +48,7 @@ type resourceState struct {
 
 	parent               *resourceState
 	dependencies         []node
-	propertyDependencies map[string][]*resourceState
+	propertyDependencies map[string][]node
 
 	allURNs     []string
 	allIDs      []string
@@ -68,7 +68,7 @@ func newResourceState(name, token string, custom bool, schema *resourceSchema, d
 		custom:               custom,
 		schema:               schema,
 		decl:                 decl,
-		propertyDependencies: map[string][]*resourceState{},
+		propertyDependencies: map[string][]node{},
 	}
 }
 
@@ -95,6 +95,10 @@ func (rs *resourceState) outputs() cty.Value {
 	return cty.ListVal(rs.allOutputs)
 }
 
+func (rs *resourceState) resourceDependencies() []*resourceState {
+	return []*resourceState{rs}
+}
+
 func (rs *resourceState) prepare(ctx *programContext) hcl.Diagnostics {
 	// Decode the body of the resource config.
 	impliedSchema := hcldec.ImpliedSchema(rs.schema.spec)
@@ -105,15 +109,13 @@ func (rs *resourceState) prepare(ctx *programContext) hcl.Diagnostics {
 
 	// Collect the resource's dependencies and ensure they are registered before the resource itself.
 	deps := map[node]struct{}{}
-	rs.propertyDependencies = map[string][]*resourceState{}
+	rs.propertyDependencies = map[string][]node{}
 	for _, attr := range content.Attributes {
 		attrDeps, attrDiags := expressionDeps(ctx, attr.Expr)
 		diags = append(diags, attrDiags...)
 		for _, dep := range attrDeps {
 			deps[dep] = struct{}{}
-			if resourceDep, ok := dep.(*resourceState); ok {
-				rs.propertyDependencies[attr.Name] = append(rs.propertyDependencies[attr.Name], resourceDep)
-			}
+			rs.propertyDependencies[attr.Name] = append(rs.propertyDependencies[attr.Name], dep)
 		}
 	}
 	for typ, blocks := range content.Blocks.ByType() {
@@ -148,9 +150,7 @@ func (rs *resourceState) prepare(ctx *programContext) hcl.Diagnostics {
 					diags = append(diags, unknownResource(depName, v.SourceRange()))
 				} else {
 					deps[dep] = struct{}{}
-					if resourceDep, ok := dep.(*resourceState); ok {
-						rs.propertyDependencies[typ] = append(rs.propertyDependencies[typ], resourceDep)
-					}
+					rs.propertyDependencies[typ] = append(rs.propertyDependencies[typ], dep)
 				}
 			}
 		}
@@ -202,7 +202,7 @@ func (rs *resourceState) evaluate(ctx *programContext) {
 			vars[name] = val
 		}
 	}
-	evalContext := builtinEvalContext.NewChild()
+	evalContext := ctx.evalContext.NewChild()
 	evalContext.Variables, evalContext.Functions = vars, funcs
 
 	// Convert dependency information.
@@ -210,7 +210,9 @@ func (rs *resourceState) evaluate(ctx *programContext) {
 	for k, deps := range rs.propertyDependencies {
 		var urns []string
 		for _, dep := range deps {
-			urns = append(urns, dep.allURNs...)
+			for _, res := range dep.resourceDependencies() {
+				urns = append(urns, res.allURNs...)
+			}
 		}
 		sort.Strings(urns)
 
@@ -220,8 +222,8 @@ func (rs *resourceState) evaluate(ctx *programContext) {
 	}
 	var rpcDeps []string
 	for _, dep := range rs.dependencies {
-		if resourceDep, ok := dep.(*resourceState); ok {
-			rpcDeps = append(rpcDeps, resourceDep.allURNs...)
+		for _, res := range dep.resourceDependencies() {
+			rpcDeps = append(rpcDeps, res.allURNs...)
 		}
 	}
 	sort.Strings(rpcDeps)

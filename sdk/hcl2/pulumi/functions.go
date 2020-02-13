@@ -126,12 +126,15 @@ var readDirFunc = function.New(&function.Spec{
 	},
 })
 
-var builtinEvalContext = &hcl.EvalContext{
-	Functions: map[string]function.Function{
-		"eval":      evalFunc,
-		"func":      funcFunc,
-		"fileAsset": fileAssetFunc,
-		//"mimeType":  mimeTypeFunc,
-		//"readDir": readDirFunc,
-	},
+func makeBuiltinEvalContext(ctx *programContext) *hcl.EvalContext {
+	return &hcl.EvalContext{
+		Functions: map[string]function.Function{
+			"eval":      evalFunc,
+			"func":      funcFunc,
+			"fileAsset": fileAssetFunc,
+			"invoke":    makeInvokeFunc(ctx),
+			//"mimeType":  mimeTypeFunc,
+			//"readDir": readDirFunc,
+		},
+	}
 }

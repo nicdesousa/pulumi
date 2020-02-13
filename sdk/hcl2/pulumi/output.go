@@ -48,7 +48,7 @@ func (os *outputState) evaluate(ctx *programContext) (cty.Value, hcl.Diagnostics
 		}
 	}
 
-	evalContext := builtinEvalContext.NewChild()
+	evalContext := ctx.evalContext.NewChild()
 	evalContext.Variables, evalContext.Functions = vars, funcs
 
 	return os.expr.Value(evalContext)

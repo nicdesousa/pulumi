@@ -17,6 +17,7 @@ type node interface {
 	prepare(ctx *programContext) hcl.Diagnostics
 	evaluate(ctx *programContext)
 	await(ctx *programContext) (cty.Value, hcl.Diagnostics, bool)
+	resourceDependencies() []*resourceState
 }
 
 type configVar struct {
@@ -45,11 +46,6 @@ type alias struct {
 	Project hcl.Expression `hcl:"project,attr"`
 }
 
-//type invokeOptions struct {
-//	Parent   string `hcl:"parent,attr"`
-//	Provider string `hcl:"provider,attr"`
-//}
-
 type timeouts struct {
 	Create int `hcl:"create,attr"`
 	Update int `hcl:"update,attr"`
@@ -69,14 +65,6 @@ type resourceOptions struct {
 	IgnoreChanges       *[]string      `hcl:"ignoreChanges,attr"`
 	Aliases             []*alias       `hcl:"alias,block"`
 }
-
-//type callDecl struct {
-//	Name string `hcl:"name,label"`
-//
-//	Options *invokeOptions `hcl:"options,block"`
-//
-//	Config hcl.Body `hcl:",remain"`
-//}
 
 type resourceDecl struct {
 	Name string `hcl:"name,label"`
@@ -112,7 +100,8 @@ type programContext struct {
 	nodes   map[string]node
 	outputs map[string]*outputState
 
-	stack *resourceState
+	evalContext *hcl.EvalContext
+	stack       *resourceState
 }
 
 func newProgramContext(cancel context.Context, info RunInfo) (*programContext, error) {
@@ -144,7 +133,7 @@ func newProgramContext(cancel context.Context, info RunInfo) (*programContext, e
 	//		engine = &mockEngine{}
 	//	}
 
-	return &programContext{
+	ctx := &programContext{
 		cancel:  cancel,
 		info:    info,
 		monitor: monitor,
@@ -153,7 +142,9 @@ func newProgramContext(cancel context.Context, info RunInfo) (*programContext, e
 		schemae: map[string]*packageSchema{},
 		nodes:   map[string]node{},
 		outputs: map[string]*outputState{},
-	}, nil
+	}
+	ctx.evalContext = makeBuiltinEvalContext(ctx)
+	return ctx, nil
 }
 
 func (ctx *programContext) ensureSchema(pkgName string) (*packageSchema, error) {
@@ -248,7 +239,7 @@ func expressionDeps(ctx *programContext, expr hcl.Expression) ([]node, hcl.Diagn
 	if node, ok := expr.(hclsyntax.Node); ok {
 		hclsyntax.VisitAll(node, func(node hclsyntax.Node) hcl.Diagnostics {
 			if call, ok := node.(*hclsyntax.FunctionCallExpr); ok {
-				if _, ok := builtinEvalContext.Functions[call.Name]; !ok {
+				if _, ok := ctx.evalContext.Functions[call.Name]; !ok {
 					dep, ok := ctx.nodes[call.Name]
 					if !ok {
 						diags = append(diags, unknownResource(call.Name, call.NameRange))

@@ -12,6 +12,7 @@ type localState struct {
 	name         string
 	expr         hcl.Expression
 	dependencies []node
+	resourceDeps []*resourceState
 
 	diagnostics hcl.Diagnostics
 	value       cty.Value
@@ -27,6 +28,10 @@ func newLocalState(name string, expr hcl.Expression) *localState {
 
 func (ls *localState) nodeName() string {
 	return ls.name
+}
+
+func (ls *localState) resourceDependencies() []*resourceState {
+	return ls.resourceDeps
 }
 
 func (ls *localState) prepare(ctx *programContext) hcl.Diagnostics {
@@ -49,6 +54,9 @@ func (ls *localState) evaluate(ctx *programContext) {
 			result = awaitableCanceled
 			return
 		}
+
+		ls.resourceDeps = append(ls.resourceDeps, dep.resourceDependencies()...)
+
 		name := dep.nodeName()
 		if val.Type().Equals(funcCapsule) {
 			funcs[name] = *(val.EncapsulatedValue().(*function.Function))
@@ -56,7 +64,7 @@ func (ls *localState) evaluate(ctx *programContext) {
 			vars[name] = val
 		}
 	}
-	evalContext := builtinEvalContext.NewChild()
+	evalContext := ctx.evalContext.NewChild()
 	evalContext.Variables, evalContext.Functions = vars, funcs
 
 	ls.value, ls.diagnostics = ls.expr.Value(evalContext)
